@@ -2,6 +2,8 @@ package main
 
 import (
 	"encoding/csv"
+	"io"
+	"io/ioutil"
 	"log"
 	"os"
 	"path/filepath"
@@ -37,6 +39,7 @@ func main() {
 	// Read the environment variables
 	username := os.Getenv("GITHUB_USERNAME")
 	accessToken := os.Getenv("GITHUB_ACCESS_TOKEN")
+
 	auth := &http.BasicAuth{
 		Username: username,
 		Password: accessToken,
@@ -60,8 +63,10 @@ func main() {
 	}
 }
 
-func cloneRepository(auth *http.BasicAuth, repoURL, cloneDir string, cloneCh chan<- string, wg *sync.WaitGroup) {
+func cloneRepository(auth *http.BasicAuth, repoURL, c string, cloneCh chan<- string, wg *sync.WaitGroup) {
 	defer wg.Done()
+
+	cloneDir := filepath.Join("./repo/", c)
 
 	if _, err := os.Stat(cloneDir); err == nil {
 		if err := os.RemoveAll(cloneDir); err != nil {
@@ -86,28 +91,96 @@ func cloneRepository(auth *http.BasicAuth, repoURL, cloneDir string, cloneCh cha
 }
 
 func moveSpecificFolders(cloneDir string) {
-	// Walk through the cloned directory
-	err := filepath.Walk(cloneDir, func(path string, info os.FileInfo, err error) error {
-		if err != nil {
-			return err
-		}
+	rootDir := "." // Set this to the path of your root directory if different
 
-		// Check if the path contains the desired package name
-		if strings.Contains(path, "JBus") {
-			destFolder := filepath.Join(cloneDir, "JBus")
-			if info.IsDir() {
-				// Move the folder to the destination
-				newPath := filepath.Join(destFolder, info.Name())
-				log.Printf("Moving %s to %s\n", path, newPath)
-				err := os.Rename(path, newPath)
-				if err != nil {
-					log.Printf("Error moving folder: %v\n", err)
+	// Define the possible paths where the "JSleep" directory might be located
+	possiblePaths := []string{
+		filepath.Join(cloneDir, "src", "main", "java", "com"),
+		// Add more possible paths here if needed
+	}
+
+	for _, path := range possiblePaths {
+		err := filepath.Walk(path, func(folderPath string, info os.FileInfo, err error) error {
+			if err != nil {
+				return err
+			}
+
+			// Check if the folder contains "JSleep"
+			if strings.Contains(info.Name(), "JSleep") && info.IsDir() {
+				// Create the destination path in the "collect" folder
+				destPath := filepath.Join(rootDir, "src", info.Name())
+
+				// Ensure that the "collect" directory exists
+				if err := os.MkdirAll(destPath, os.ModePerm); err != nil {
+					log.Printf("Error creating 'collect' directory: %v\n", err)
+					return nil
+				}
+
+				// Copy the entire directory and its contents to the destination
+				log.Printf("Copying %s to %s\n", folderPath, destPath)
+				if err := copyDirectory(folderPath, destPath); err != nil {
+					log.Printf("Error copying directory: %v\n", err)
 				}
 			}
+			return nil
+		})
+
+		if err != nil {
+			log.Printf("Error searching for JSleep folder: %v\n", err)
 		}
-		return nil
-	})
-	if err != nil {
-		log.Printf("Error walking through directory: %v\n", err)
 	}
+}
+
+func copyDirectory(src, dest string) error {
+	srcInfo, err := os.Stat(src)
+	if err != nil {
+		return err
+	}
+
+	if err := os.MkdirAll(dest, srcInfo.Mode()); err != nil {
+		return err
+	}
+
+	entries, err := ioutil.ReadDir(src)
+	if err != nil {
+		return err
+	}
+
+	for _, entry := range entries {
+		srcPath := filepath.Join(src, entry.Name())
+		destPath := filepath.Join(dest, entry.Name())
+
+		if entry.IsDir() {
+			if err := copyDirectory(srcPath, destPath); err != nil {
+				return err
+			}
+		} else {
+			if err := copyFile(srcPath, destPath); err != nil {
+				return err
+			}
+		}
+	}
+
+	return nil
+}
+
+func copyFile(src, dest string) error {
+	srcFile, err := os.Open(src)
+	if err != nil {
+		return err
+	}
+	defer srcFile.Close()
+
+	destFile, err := os.Create(dest)
+	if err != nil {
+		return err
+	}
+	defer destFile.Close()
+
+	_, err = io.Copy(destFile, srcFile)
+	if err != nil {
+		return err
+	}
+
+	return nil
 }
