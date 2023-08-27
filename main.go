@@ -9,9 +9,11 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/joho/godotenv"
 	"gopkg.in/src-d/go-git.v4"
+	"gopkg.in/src-d/go-git.v4/plumbing/object"
 	"gopkg.in/src-d/go-git.v4/plumbing/transport/http"
 )
 
@@ -48,7 +50,7 @@ func main() {
 	// Start Goroutines for cloning
 	for _, record := range records {
 		wg.Add(1)
-		go cloneRepository(auth, record[0], record[1], cloneCh, &wg)
+		go cloneRepository(auth, record[0], record[1], cloneCh, &wg, record[2])
 	}
 
 	// Close the cloneCh channel once all cloning is done
@@ -58,13 +60,21 @@ func main() {
 	}()
 
 	// Move specific folders from each cloned repository
-	for cloneDir := range cloneCh {
-		moveSpecificFolders(cloneDir)
+	for range cloneCh {
+		// Do nothing here, just wait for the channel to close
 	}
+
+	log.Println("All repositories cloned and folders copied.")
 }
 
-func cloneRepository(auth *http.BasicAuth, repoURL, c string, cloneCh chan<- string, wg *sync.WaitGroup) {
+func cloneRepository(auth *http.BasicAuth, repoURL, c string, cloneCh chan<- string, wg *sync.WaitGroup, targetTimeString string) {
 	defer wg.Done()
+
+	targetTime, err := time.Parse("2006-01-02 15:04:05 MST", targetTimeString)
+	if err != nil {
+		log.Printf("Error parsing target time: %v\n", err)
+		return
+	}
 
 	cloneDir := filepath.Join("./repo/", c)
 
@@ -76,7 +86,7 @@ func cloneRepository(auth *http.BasicAuth, repoURL, c string, cloneCh chan<- str
 	}
 
 	log.Printf("Cloning %s into %s...\n", repoURL, cloneDir)
-	_, err := git.PlainClone(cloneDir, false, &git.CloneOptions{
+	repo, err := git.PlainClone(cloneDir, false, &git.CloneOptions{
 		Auth:     auth,
 		URL:      repoURL,
 		Progress: os.Stdout,
@@ -84,6 +94,52 @@ func cloneRepository(auth *http.BasicAuth, repoURL, c string, cloneCh chan<- str
 	if err != nil {
 		log.Printf("Error cloning %s: %v\n", repoURL, err)
 		return
+	}
+
+	// Fetch the latest commit before the target time
+	headRef, err := repo.Head()
+	if err != nil {
+		log.Printf("Error getting HEAD reference: %v\n", err)
+		return
+	}
+
+	var latestCommit *object.Commit
+	commitIter, err := repo.Log(&git.LogOptions{From: headRef.Hash()})
+	if err != nil {
+		log.Printf("Error iterating commits: %v\n", err)
+		return
+	}
+	commitIter.ForEach(func(c *object.Commit) error {
+		if c.Committer.When.Before(targetTime) {
+			latestCommit = c
+			return object.ErrCanceled
+		}
+		return nil
+	})
+
+	if latestCommit != nil {
+		log.Printf("Latest commit before %s in %s: %s\n", targetTime, c, latestCommit.Hash)
+
+		// Checkout to the latest commit
+		w, err := repo.Worktree()
+		if err != nil {
+			log.Printf("Error getting worktree: %v\n", err)
+			return
+		}
+		checkoutOptions := &git.CheckoutOptions{
+			Hash:  latestCommit.Hash,
+			Force: true,
+		}
+		err = w.Checkout(checkoutOptions)
+		if err != nil {
+			log.Printf("Error checking out: %v\n", err)
+			return
+		}
+		log.Println("Checkout Success!")
+		moveSpecificFolders(cloneDir)
+
+	} else {
+		log.Printf("No commits before %s in %s.\n", targetTime, c)
 	}
 
 	// Send the cloned directory to the channel
@@ -95,6 +151,7 @@ func moveSpecificFolders(cloneDir string) {
 
 	// Define the possible paths where the "JSleep" directory might be located
 	possiblePaths := []string{
+		rootDir,
 		filepath.Join(cloneDir, "src", "main", "java", "com"),
 		// Add more possible paths here if needed
 	}
