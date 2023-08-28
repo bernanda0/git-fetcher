@@ -38,7 +38,6 @@ func main() {
 		log.Fatal("Error loading .env file")
 	}
 
-	// Read the environment variables
 	username := os.Getenv("GITHUB_USERNAME")
 	accessToken := os.Getenv("GITHUB_ACCESS_TOKEN")
 
@@ -47,10 +46,19 @@ func main() {
 		Password: accessToken,
 	}
 
+	date := os.Getenv("DATE")
+
+	// Open the text file for writing
+	outputFile, err := os.Create("TestedPackages.txt")
+	if err != nil {
+		log.Fatalf("Error creating text file: %v\n", err)
+	}
+	defer outputFile.Close()
+
 	// Start Goroutines for cloning
 	for _, record := range records {
 		wg.Add(1)
-		go cloneRepository(auth, record[0], record[1], cloneCh, &wg, record[2])
+		go cloneRepository(auth, record[0], record[1], cloneCh, &wg, date)
 	}
 
 	// Close the cloneCh channel once all cloning is done
@@ -60,8 +68,8 @@ func main() {
 	}()
 
 	// Move specific folders from each cloned repository
-	for range cloneCh {
-		// Do nothing here, just wait for the channel to close
+	for cloneDir := range cloneCh {
+		moveSpecificFolders(cloneDir, outputFile)
 	}
 
 	log.Println("All repositories cloned and folders copied.")
@@ -70,7 +78,7 @@ func main() {
 func cloneRepository(auth *http.BasicAuth, repoURL, c string, cloneCh chan<- string, wg *sync.WaitGroup, targetTimeString string) {
 	defer wg.Done()
 
-	targetTime, err := time.Parse("2006-01-02 15:04:05 MST", targetTimeString)
+	targetTime, err := time.Parse("2006-01-02 15:04:05", targetTimeString)
 	if err != nil {
 		log.Printf("Error parsing target time: %v\n", err)
 		return
@@ -136,8 +144,9 @@ func cloneRepository(auth *http.BasicAuth, repoURL, c string, cloneCh chan<- str
 			return
 		}
 		log.Println("Checkout Success!")
-		moveSpecificFolders(cloneDir)
 
+		// move to the folder
+		// moveSpecificFolders(cloneDir)
 	} else {
 		log.Printf("No commits before %s in %s.\n", targetTime, c)
 	}
@@ -146,14 +155,13 @@ func cloneRepository(auth *http.BasicAuth, repoURL, c string, cloneCh chan<- str
 	cloneCh <- cloneDir
 }
 
-func moveSpecificFolders(cloneDir string) {
-	rootDir := "." // Set this to the path of your root directory if different
+func moveSpecificFolders(cloneDir string, outputFile *os.File) {
+	rootDir := "."
+	written := false
 
-	// Define the possible paths where the "JSleep" directory might be located
 	possiblePaths := []string{
-		rootDir,
-		filepath.Join(cloneDir, "src", "main", "java", "com"),
-		// Add more possible paths here if needed
+		cloneDir, // buat modul sebelum intelliJ
+		filepath.Join(cloneDir, "src", "main", "java", "com"), // buat modul after intellij
 	}
 
 	for _, path := range possiblePaths {
@@ -163,13 +171,14 @@ func moveSpecificFolders(cloneDir string) {
 			}
 
 			// Check if the folder contains "JSleep"
-			if strings.Contains(info.Name(), "JSleep") && info.IsDir() {
-				// Create the destination path in the "collect" folder
-				destPath := filepath.Join(rootDir, "src", info.Name())
+			packageName := os.Getenv("PACKAGE_INFIX")
+			movingDir := os.Getenv("MOVING_DIR")
+			if strings.Contains(info.Name(), packageName) && info.IsDir() {
+				destPath := filepath.Join(rootDir, movingDir, info.Name())
 
-				// Ensure that the "collect" directory exists
+				// Ensure that the destination directory exists
 				if err := os.MkdirAll(destPath, os.ModePerm); err != nil {
-					log.Printf("Error creating 'collect' directory: %v\n", err)
+					log.Printf("Error creating destination directory: %v\n", err)
 					return nil
 				}
 
@@ -177,13 +186,26 @@ func moveSpecificFolders(cloneDir string) {
 				log.Printf("Copying %s to %s\n", folderPath, destPath)
 				if err := copyDirectory(folderPath, destPath); err != nil {
 					log.Printf("Error copying directory: %v\n", err)
+					return nil
 				}
+
+				if !written {
+					packageName := info.Name()
+
+					if _, err := outputFile.WriteString(packageName + "\n"); err != nil {
+						log.Printf("Error writing to text file: %v\n", err)
+						return nil
+					}
+					log.Printf("Package '%s' written to text file.\n", packageName)
+					written = true
+				}
+
 			}
 			return nil
 		})
 
 		if err != nil {
-			log.Printf("Error searching for JSleep folder: %v\n", err)
+			log.Printf("Error searching %v\n", err)
 		}
 	}
 }
