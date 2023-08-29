@@ -13,21 +13,24 @@ import (
 
 	"github.com/joho/godotenv"
 	"gopkg.in/src-d/go-git.v4"
+	"gopkg.in/src-d/go-git.v4/plumbing"
 	"gopkg.in/src-d/go-git.v4/plumbing/object"
 	"gopkg.in/src-d/go-git.v4/plumbing/transport/http"
 )
 
 func main() {
+	l := log.New(os.Stdout, "BR-", log.LstdFlags)
+
 	file, err := os.Open("repos.csv")
 	if err != nil {
-		log.Fatal(err)
+		l.Fatal(err)
 	}
 	defer file.Close()
 
 	reader := csv.NewReader(file)
 	records, err := reader.ReadAll()
 	if err != nil {
-		log.Fatal(err)
+		l.Fatal(err)
 	}
 
 	var wg sync.WaitGroup
@@ -35,7 +38,7 @@ func main() {
 
 	err = godotenv.Load()
 	if err != nil {
-		log.Fatal("Error loading .env file")
+		l.Fatal("Error loading .env file")
 	}
 
 	username := os.Getenv("GITHUB_USERNAME")
@@ -46,19 +49,19 @@ func main() {
 		Password: accessToken,
 	}
 
-	date := os.Getenv("DATE")
+	date := os.Getenv("BEFORE_DATE")
 
 	// Open the text file for writing
 	outputFile, err := os.Create("TestedPackages.txt")
 	if err != nil {
-		log.Fatalf("Error creating text file: %v\n", err)
+		l.Fatalf("Error creating text file: %v\n", err)
 	}
 	defer outputFile.Close()
 
 	// Start Goroutines for cloning
 	for _, record := range records {
 		wg.Add(1)
-		go cloneRepository(auth, record[0], record[1], cloneCh, &wg, date)
+		go cloneRepository(l, auth, record[0], record[1], record[2], cloneCh, &wg, date)
 	}
 
 	// Close the cloneCh channel once all cloning is done
@@ -69,18 +72,18 @@ func main() {
 
 	// Move specific folders from each cloned repository
 	for cloneDir := range cloneCh {
-		moveSpecificFolders(cloneDir, outputFile)
+		moveSpecificFolders(l, cloneDir, outputFile)
 	}
 
-	log.Println("All repositories cloned and folders copied.")
+	l.Println("All repositories cloned and folders copied.")
 }
 
-func cloneRepository(auth *http.BasicAuth, repoURL, c string, cloneCh chan<- string, wg *sync.WaitGroup, targetTimeString string) {
+func cloneRepository(l *log.Logger, auth *http.BasicAuth, repoURL, c, b string, cloneCh chan<- string, wg *sync.WaitGroup, targetTimeString string) {
 	defer wg.Done()
 
 	targetTime, err := time.Parse("2006-01-02 15:04:05", targetTimeString)
 	if err != nil {
-		log.Printf("Error parsing target time: %v\n", err)
+		l.Printf("Error parsing target time: %v\n", err)
 		return
 	}
 
@@ -88,33 +91,43 @@ func cloneRepository(auth *http.BasicAuth, repoURL, c string, cloneCh chan<- str
 
 	if _, err := os.Stat(cloneDir); err == nil {
 		if err := os.RemoveAll(cloneDir); err != nil {
-			log.Printf("Error deleting existing directory: %v\n", err)
+			l.Printf("Error deleting existing directory: %v\n", err)
 			return
 		}
 	}
+	l.Printf("Cloning %s into %s...\n", repoURL, cloneDir)
 
-	log.Printf("Cloning %s into %s...\n", repoURL, cloneDir)
+	var reference plumbing.ReferenceName
+	branch := "refs/heads/" + b
+	if b == "" {
+		reference = ""
+	} else {
+		reference = plumbing.ReferenceName(branch)
+	}
+
+	l.Println("Clonging branch", reference)
 	repo, err := git.PlainClone(cloneDir, false, &git.CloneOptions{
-		Auth:     auth,
-		URL:      repoURL,
-		Progress: os.Stdout,
+		Auth:          auth,
+		URL:           repoURL,
+		ReferenceName: reference,
+		Progress:      os.Stdout,
 	})
 	if err != nil {
-		log.Printf("Error cloning %s: %v\n", repoURL, err)
+		l.Printf("Error cloning %s: %v\n", repoURL, err)
 		return
 	}
 
 	// Fetch the latest commit before the target time
 	headRef, err := repo.Head()
 	if err != nil {
-		log.Printf("Error getting HEAD reference: %v\n", err)
+		l.Printf("Error getting HEAD reference: %v\n", err)
 		return
 	}
 
 	var latestCommit *object.Commit
 	commitIter, err := repo.Log(&git.LogOptions{From: headRef.Hash()})
 	if err != nil {
-		log.Printf("Error iterating commits: %v\n", err)
+		l.Printf("Error iterating commits: %v\n", err)
 		return
 	}
 	commitIter.ForEach(func(c *object.Commit) error {
@@ -126,12 +139,12 @@ func cloneRepository(auth *http.BasicAuth, repoURL, c string, cloneCh chan<- str
 	})
 
 	if latestCommit != nil {
-		log.Printf("Latest commit before %s in %s: %s\n", targetTime, c, latestCommit.Hash)
+		l.Printf("Latest commit before %s in %s: %s\n", targetTime, c, latestCommit.Hash)
 
 		// Checkout to the latest commit
 		w, err := repo.Worktree()
 		if err != nil {
-			log.Printf("Error getting worktree: %v\n", err)
+			l.Printf("Error getting worktree: %v\n", err)
 			return
 		}
 		checkoutOptions := &git.CheckoutOptions{
@@ -140,29 +153,31 @@ func cloneRepository(auth *http.BasicAuth, repoURL, c string, cloneCh chan<- str
 		}
 		err = w.Checkout(checkoutOptions)
 		if err != nil {
-			log.Printf("Error checking out: %v\n", err)
+			l.Printf("Error checking out: %v\n", err)
 			return
 		}
-		log.Println("Checkout Success!")
+		l.Println("Checkout Success!")
 
 		// move to the folder
 		// moveSpecificFolders(cloneDir)
 	} else {
-		log.Printf("No commits before %s in %s.\n", targetTime, c)
+		l.Printf("No commits before %s in %s.\n", targetTime, c)
 	}
 
 	// Send the cloned directory to the channel
 	cloneCh <- cloneDir
 }
 
-func moveSpecificFolders(cloneDir string, outputFile *os.File) {
+func moveSpecificFolders(l *log.Logger, cloneDir string, outputFile *os.File) {
 	rootDir := "."
 	written := false
-
+	packageName := os.Getenv("PACKAGE_INFIX")
+	movingDir := os.Getenv("MOVING_DIR")
 	possiblePaths := []string{
 		cloneDir, // buat modul sebelum intelliJ
 		filepath.Join(cloneDir, "src", "main", "java", "com"), // buat modul after intellij
 	}
+	deleted := false
 
 	for _, path := range possiblePaths {
 		err := filepath.Walk(path, func(folderPath string, info os.FileInfo, err error) error {
@@ -170,22 +185,28 @@ func moveSpecificFolders(cloneDir string, outputFile *os.File) {
 				return err
 			}
 
-			// Check if the folder contains "JSleep"
-			packageName := os.Getenv("PACKAGE_INFIX")
-			movingDir := os.Getenv("MOVING_DIR")
 			if strings.Contains(info.Name(), packageName) && info.IsDir() {
 				destPath := filepath.Join(rootDir, movingDir, info.Name())
 
+				// Remove the destination directory if it exists
+				if _, err := os.Stat(destPath); err == nil && !deleted {
+					if err := os.RemoveAll(destPath); err != nil {
+						l.Printf("Error removing destination directory: %v\n", err)
+						return nil
+					}
+					deleted = true
+				}
+
 				// Ensure that the destination directory exists
 				if err := os.MkdirAll(destPath, os.ModePerm); err != nil {
-					log.Printf("Error creating destination directory: %v\n", err)
+					l.Printf("Error creating destination directory: %v\n", err)
 					return nil
 				}
 
 				// Copy the entire directory and its contents to the destination
-				log.Printf("Copying %s to %s\n", folderPath, destPath)
+				l.Printf("Copying %s to %s\n", folderPath, destPath)
 				if err := copyDirectory(folderPath, destPath); err != nil {
-					log.Printf("Error copying directory: %v\n", err)
+					l.Printf("Error copying directory: %v\n", err)
 					return nil
 				}
 
@@ -193,10 +214,10 @@ func moveSpecificFolders(cloneDir string, outputFile *os.File) {
 					packageName := info.Name()
 
 					if _, err := outputFile.WriteString(packageName + "\n"); err != nil {
-						log.Printf("Error writing to text file: %v\n", err)
+						l.Printf("Error writing to text file: %v\n", err)
 						return nil
 					}
-					log.Printf("Package '%s' written to text file.\n", packageName)
+					l.Printf("Package '%s' written to text file.\n", packageName)
 					written = true
 				}
 
@@ -205,7 +226,7 @@ func moveSpecificFolders(cloneDir string, outputFile *os.File) {
 		})
 
 		if err != nil {
-			log.Printf("Error searching %v\n", err)
+			l.Println(err)
 		}
 	}
 }
