@@ -105,7 +105,7 @@ func cloneRepository(l *log.Logger, auth *http.BasicAuth, repoURL, c, b string, 
 		reference = plumbing.ReferenceName(branch)
 	}
 
-	l.Println("Clonging branch", reference)
+	l.Println("Cloning branch", reference)
 	repo, err := git.PlainClone(cloneDir, false, &git.CloneOptions{
 		Auth:          auth,
 		URL:           repoURL,
@@ -147,6 +147,10 @@ func cloneRepository(l *log.Logger, auth *http.BasicAuth, repoURL, c, b string, 
 			l.Printf("Error getting worktree: %v\n", err)
 			return
 		}
+		// resetOptions := &git.ResetOptions{
+		// 	Commit: latestCommit.Hash,
+		// 	Mode:   git.HardReset,
+		// }
 		checkoutOptions := &git.CheckoutOptions{
 			Hash:  latestCommit.Hash,
 			Force: true,
@@ -156,7 +160,24 @@ func cloneRepository(l *log.Logger, auth *http.BasicAuth, repoURL, c, b string, 
 			l.Printf("Error checking out: %v\n", err)
 			return
 		}
-		l.Println("Checkout Success!")
+
+		cleanOptions := &git.CleanOptions{
+			Dir: true,
+		}
+
+		w.Clean(cleanOptions)
+		if err != nil {
+			l.Printf("Error cleaning : %v\n", err)
+			return
+		}
+		l.Println("Cleaning Success!")
+
+		// err = w.Reset(resetOptions)
+		// if err != nil {
+		// 	l.Printf("Error resetting: %v\n", err)
+		// 	return
+		// }
+		// l.Println("Reset Success!")
 
 		// move to the folder
 		// moveSpecificFolders(cloneDir)
